@@ -20,6 +20,96 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+get_java_major_version() {
+    java -XshowSettings:properties -version 2>&1 |
+        awk -F'= ' '/java.specification.version/ {
+            print $2
+            exit
+        }'
+}
+
+ensure_java_17() {
+    log "Checking Java"
+
+    local java_major=""
+    local java_home=""
+
+    if command_exists java; then
+        java_major="$(get_java_major_version || true)"
+    fi
+
+    if [[ "$java_major" =~ ^[0-9]+$ ]] && (( java_major >= 17 )); then
+        if [[ -z "${JAVA_HOME:-}" ]]; then
+            JAVA_HOME="$(
+                /usr/libexec/java_home -v "$java_major" 2>/dev/null ||
+                dirname "$(dirname "$(command -v java)")"
+            )"
+            export JAVA_HOME
+        fi
+
+        export PATH="$JAVA_HOME/bin:$PATH"
+
+        echo "Java $java_major detected."
+        echo "JAVA_HOME: $JAVA_HOME"
+        return 0
+    fi
+
+    if [[ -z "$java_major" ]]; then
+        echo "Java is not installed."
+    else
+        echo "Java $java_major detected; Java 17 or newer is required."
+    fi
+
+    log "Installing OpenJDK 17"
+    brew install openjdk@17
+
+    java_home="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
+
+    [[ -x "$java_home/bin/java" ]] ||
+        fail "OpenJDK 17 was installed, but Java was not found at $java_home/bin/java"
+
+    export JAVA_HOME="$java_home"
+    export PATH="$JAVA_HOME/bin:$PATH"
+
+    java_major="$(get_java_major_version || true)"
+
+    if [[ ! "$java_major" =~ ^[0-9]+$ ]] || (( java_major < 17 )); then
+        fail "Java 17 installation could not be verified."
+    fi
+
+    echo "Java $java_major installed and activated."
+    echo "JAVA_HOME: $JAVA_HOME"
+}
+
+configure_java_shell() {
+    local shell_config="$HOME/.zshrc"
+    local marker="# Analytics Workbench Java 17"
+
+    if [[ "${SHELL:-}" != */zsh ]]; then
+        echo "Skipping persistent Java configuration because the current shell is not zsh."
+        return 0
+    fi
+
+    touch "$shell_config"
+
+    if grep -Fq "$marker" "$shell_config"; then
+        echo "Java 17 is already configured in $shell_config."
+        return 0
+    fi
+
+    log "Configuring Java 17 for future terminal sessions"
+
+    cat >> "$shell_config" <<'EOF'
+
+# Analytics Workbench Java 17
+export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+EOF
+
+    echo "Added Java 17 configuration to $shell_config."
+    echo "Open a new terminal or run: source $shell_config"
+}
+
 install_profile() {
     local profile="$1"
     local file="$WORKBENCH_DIR/requirements/$profile.txt"
@@ -37,12 +127,10 @@ log "Checking required system tools"
 
 command_exists uv || fail "uv is not installed."
 command_exists git || fail "Git is not installed."
-command_exists java || fail "Java is not installed."
 command_exists brew || fail "Homebrew is not installed."
 
-if [[ -z "${JAVA_HOME:-}" ]]; then
-    fail "JAVA_HOME is not set."
-fi
+ensure_java_17
+configure_java_shell
 
 echo "Java: $(java -version 2>&1 | head -n 1)"
 echo "uv: $(uv --version)"
