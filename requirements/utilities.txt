@@ -1,0 +1,5 @@
+python-dotenv
+rich
+loguru
+tqdm
+requests
